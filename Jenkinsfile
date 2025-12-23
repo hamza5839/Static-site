@@ -1,53 +1,57 @@
 pipeline {
-    agent any
+  agent any
 
-    environment {
-        DOCKERHUB_CRED = credentials('dockerhub-token') // create Jenkins credential
-        IMAGE_NAME = "hamza/static-site"
+  environment {
+    IMAGE = "hamza5839/static-site"
+    TAG = "latest"
+  }
+
+  stages {
+
+    stage('Checkout Code') {
+      steps {
+        git branch: 'main',
+            url: 'https://github.com/hamza5839/static-site.git'
+      }
     }
 
-    stages {
-
-        stage('Clone Repo') {
-            steps {
-                git branch: 'main', url: 'https://github.com/hamza5839/static-site.git'
-            }
-        }
-
-        stage('Build Docker Image') {
-            steps {
-                sh 'docker build -t $IMAGE_NAME:latest .'
-            }
-        }
-
-        stage('Test') {
-            steps {
-                echo 'No real tests for static site, just confirming Docker image is built'
-                sh 'docker images'
-            }
-        }
-
-        stage('Push to DockerHub') {
-            steps {
-                withCredentials([usernamePassword(credentialsId: 'dockerhub-token', passwordVariable: 'PASS', usernameVariable: 'USER')]) {
-                    sh '''
-                    echo $PASS | docker login -u $USER --password-stdin
-                    docker push $IMAGE_NAME:latest
-                    '''
-                }
-            }
-        }
-
-        stage('Deploy') {
-            steps {
-                echo 'Deploying container on server'
-                sh '''
-                docker stop static-site || true
-                docker rm static-site || true
-                docker run -d --name static-site -p 80:80 $IMAGE_NAME:latest
-                '''
-            }
-        }
-
+    stage('Build Docker Image') {
+      steps {
+        powershell "docker build -t ${IMAGE}:${TAG} ."
+      }
     }
+
+    stage('Push to DockerHub') {
+      steps {
+        withCredentials([
+          usernamePassword(
+            credentialsId: 'dockerhub',
+            usernameVariable: 'DOCKER_USER',
+            passwordVariable: 'DOCKER_PASS'
+          )
+        ]) {
+          powershell 'echo $env:DOCKER_PASS | docker login -u $env:DOCKER_USER --password-stdin'
+          powershell "docker push ${IMAGE}:${TAG}"
+        }
+      }
+    }
+
+    stage('Deploy to Kubernetes') {
+      steps {
+        withCredentials([
+          file(credentialsId: 'kubeconfig_cred', variable: 'KCFG')
+        ]) {
+          powershell "(Get-Content k8s-deployment.yaml) -replace 'DOCKERHUB_USERNAME/static-site:latest', '${IMAGE}:${TAG}' | Set-Content k8s-deployment.yaml"
+          powershell "kubectl --kubeconfig=$env:KCFG apply -f k8s-deployment.yaml"
+          powershell "kubectl --kubeconfig=$env:KCFG rollout status deployment/static-site-deploy"
+        }
+      }
+    }
+  }
+
+  post {
+    always {
+      powershell "docker logout || echo 'Logout failed but safe'"
+    }
+  }
 }
